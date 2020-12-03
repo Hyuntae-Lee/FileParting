@@ -6,43 +6,119 @@
 #include <vector>
 #include <sstream>
 #include <tuple>
+#include <algorithm>
 
 using namespace std;
 
-bool partFile(string strPath, int partSize);
-bool mergeFile(string dstFileName, vector<string> srcPathList);
-bool readFileBy(vector<pair<char*, int>>& out_buffItemList, string strPath, int partSize);
-bool saveBuffersToFile(vector<pair<char*, int>> buffItemList, string dataDir, string fileNamePrefix, string fileExt);
-long getFileSize(string path);
-auto parsePath(string strPath)->tuple<string, string, string>;
+static auto partFile(wstring strPath, int partSize)->vector<wstring>;
+static bool mergeFiles(wstring dstFileName, vector<wstring> srcFileNameList);
+static bool readFileBy(vector<pair<char*, int>>& out_buffItemList, wstring strPath, int partSize);
+static auto saveBuffersToFile(vector<pair<char*, int>> buffItemList, wstring dataDir,
+	wstring fileNamePrefix, wstring fileExt)->vector<wstring>;
+static long getFileSize(wstring path);
+static auto parsePath(wstring strPath)->tuple<wstring, wstring, wstring>;
 
 int main()
 {
-	const string kFilePath = "D:/projects/etc/fileParting/sample/angio2.dat";
+	//const wstring kFilePath = L"D:/projects/etc/fileParting/sample/angio2.dat";
+	const wstring kFilePath = L"D:\\projects\\etc\\fileParting\\sample\\angio2.dat";
 
 	const auto kPartSize = (int)pow(2, 26);
 
-	partFile(kFilePath, kPartSize);
+	auto fileNameList = partFile(kFilePath, kPartSize);
 
-	vector<string> srcFileList = {
-		"D:/projects/etc/fileParting/sample/angio2_0.dat",
-		"D:/projects/etc/fileParting/sample/angio2_1.dat",
-		"D:/projects/etc/fileParting/sample/angio2_2.dat",
-		"D:/projects/etc/fileParting/sample/angio2_3.dat",
-	};
-	mergeFile(
-		"D:/projects/etc/fileParting/sample/angio2_res.dat",
-		srcFileList
+	mergeFiles(
+		L"D:/projects/etc/fileParting/sample/angio2_res.dat",
+		fileNameList
 	);
 
     return 0;
 }
 
-auto parsePath(string strPath)->tuple<string, string, string>
+auto partFile(wstring strPath, int partSize)->vector<wstring>
+{
+	vector<pair<char*, int>> buffItemList;
+
+	// read file
+	if (!readFileBy(buffItemList, strPath, partSize)) {
+		return vector<wstring>();
+	}
+
+	// write files
+	auto pathItem = parsePath(strPath);
+	auto dataDir = get<0>(pathItem);
+	auto fileName = get<1>(pathItem);
+	auto fileExt = get<2>(pathItem);
+	auto filePathList = saveBuffersToFile(buffItemList, dataDir, fileName, fileExt);
+	if (filePathList.size() == 0) {
+		return vector<wstring>();
+	}
+
+	// clear buffers
+	for (auto buffItem : buffItemList) {
+		delete[] get<0>(buffItem);
+	}
+
+	return filePathList;
+}
+
+bool mergeFiles(wstring dstFileName, vector<wstring> srcFileNameList)
+{
+	bool ret = false;
+
+	// file to write
+	ofstream ostream(dstFileName, std::ofstream::out | std::ofstream::app | std::ostream::binary);
+	if (!ostream.is_open()) {
+		goto FINISH;
+	}
+
+	//
+	for (auto path : srcFileNameList) {
+		// read
+		ifstream istream(path, std::ostream::binary);
+		if (!istream.is_open()) {
+			goto FINISH;
+		}
+
+		auto fileSize = getFileSize(path);
+		char* buff = new char[fileSize + 1];
+		memset(buff, 0, fileSize + 1);
+
+		istream.read(buff, fileSize);
+
+		// merge
+		ostream.write(buff, fileSize);
+	}
+
+	ret = true;
+
+FINISH:
+	if (ostream.is_open()) {
+		ostream.close();
+	}
+
+	return ret;
+}
+
+auto parsePath(wstring strPath)->tuple<wstring, wstring, wstring>
 {
 	auto posEnd = strPath.length();
 	auto posExt = strPath.rfind('.');
-	auto posDir = strPath.rfind('/');
+	auto posDir0 = strPath.rfind('/');
+	auto posDir1 = strPath.rfind('\\');
+	size_t posDir = 0;
+	if (posDir0 == string::npos && posDir1 == string::npos) {
+		return tuple<wstring, wstring, wstring>();
+	}
+	else if (posDir0 == string::npos) {
+		posDir = posDir1;
+	}
+	else if (posDir1 == string::npos) {
+		posDir = posDir0;
+	}
+	else {
+		posDir = max(posDir0, posDir1);
+	}
 
 	auto strExt = strPath.substr(posExt + 1, posEnd - (posExt + 1));
 	auto strDir = strPath.substr(0, posDir);
@@ -51,7 +127,7 @@ auto parsePath(string strPath)->tuple<string, string, string>
 	return make_tuple(strDir, strName, strExt);
 }
 
-long getFileSize(string path)
+long getFileSize(wstring path)
 {
 	ifstream istream(path, ifstream::binary);
 	if (!istream.is_open()) {
@@ -66,7 +142,7 @@ long getFileSize(string path)
 	return fileSize;
 }
 
-bool readFileBy(vector<pair<char*, int>>& out_buffItemList, string strPath, int partSize)
+bool readFileBy(vector<pair<char*, int>>& out_buffItemList, wstring strPath, int partSize)
 {
 	ifstream istream(strPath, ifstream::binary);
 	if (!istream.is_open()) {
@@ -99,22 +175,24 @@ bool readFileBy(vector<pair<char*, int>>& out_buffItemList, string strPath, int 
 	return true;
 }
 
-bool saveBuffersToFile(vector<pair<char*, int>> buffItemList, string dataDir, string fileNamePrefix, string fileExt)
+auto saveBuffersToFile(vector<pair<char*, int>> buffItemList, wstring dataDir, wstring fileNamePrefix, wstring fileExt)->vector<wstring>
 {
+	vector<wstring> fileNameList;
+
 	const int kListSize = (int)buffItemList.size();
 	for (int idx = 0; idx < kListSize; idx++) {
 		// determine file name
-		stringbuf strBuf;
-		ostream ostream(&strBuf, std::ostream::binary);
+		wstringbuf strBuf;
+		wostream ostream(&strBuf, std::ostream::binary);
 
 		ostream << fileNamePrefix;
-		ostream << "_";
+		ostream << L"_";
 		ostream << idx;
-		ostream << ".";
+		ostream << L".";
 		ostream << fileExt;
 
 		auto fileName = strBuf.str();
-		auto filePath = dataDir + "/" + fileName;
+		auto filePath = dataDir + L"/" + fileName;
 
 		//  save file
 		ofstream fstream(filePath, std::ostream::binary);
@@ -130,70 +208,10 @@ bool saveBuffersToFile(vector<pair<char*, int>> buffItemList, string dataDir, st
 		//
 		fstream.flush();
 		fstream.close();
+
+		fileNameList.push_back(filePath);
 	}
 
-	return true;
-}
-
-bool mergeFile(string dstFileName, vector<string> srcPathList)
-{
-	bool ret = false;
-
-	// file to write
-	ofstream ostream(dstFileName, std::ofstream::out | std::ofstream::app | std::ostream::binary);
-	if (!ostream.is_open()) {
-		goto FINISH;
-	}
-
-	//
-	for (auto path : srcPathList) {
-		// read
-		ifstream istream(path, std::ostream::binary);
-		if (!istream.is_open()) {
-			goto FINISH;
-		}
-
-		auto fileSize = getFileSize(path);
-		char* buff = new char[fileSize + 1];
-		memset(buff, 0, fileSize + 1);
-
-		istream.read(buff, fileSize);
-
-		// merge
-		ostream.write(buff, fileSize);
-	}
-
-	ret = true;
-
-FINISH:
-	if (ostream.is_open()) {
-		ostream.close();
-	}
-
-	return ret;
-}
-
-bool partFile(string strPath, int partSize)
-{
-	vector<pair<char*, int>> buffItemList;
-
-	// read file
-	if (!readFileBy(buffItemList, strPath, partSize)) {
-		return false;
-	}
-
-	// write files
-	auto pathItem = parsePath(strPath);
-	auto dataDir = get<0>(pathItem);
-	auto fileName = get<1>(pathItem);
-	auto fileExt = get<2>(pathItem);
-	if (!saveBuffersToFile(buffItemList, dataDir, fileName, fileExt)) {
-		return false;
-	}
-
-	// clear buffers
-	for (auto buffItem : buffItemList) {
-		delete[] get<0>(buffItem);
-	}
+	return fileNameList;
 }
 
